@@ -1,4 +1,9 @@
+
 .DS_Store
+
+# HPC Files
+*.pbs
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
