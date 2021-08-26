@@ -93,7 +93,8 @@ pvals_loc.to_csv(save_folder +
                  '-sigma1_'+str(sigma1)+
                  '-sigma0_'+str(sigma0)+
                  '-local'+
-                 '.csv')
+                 '.csv',
+                 index = False)
 np.savetxt(save_folder +
             'reps_'+str(int(N))+
             '-B_'+str(int(B))+

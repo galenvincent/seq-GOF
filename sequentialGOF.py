@@ -140,8 +140,9 @@ class KnnRegressor:
                 data['Y'].values
             )
         elif self.k is None:
+            n = int(n*0.9) # adjust sample size for 10 fold cross validation
             ks = [2**ii+1 for ii in range(3, int(np.log2(n)+1))]
-            loss = np.zeros(int(np.log2(n)-2))
+            loss = np.zeros(len(ks))
             ii = 0
             for kk in ks:
                 self.regression = nn.KNeighborsClassifier(n_neighbors=kk)
