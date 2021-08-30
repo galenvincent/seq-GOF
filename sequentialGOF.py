@@ -8,6 +8,7 @@ from sklearn.model_selection import cross_val_score
 from sklearn.metrics import make_scorer
 from tqdm import tqdm
 import copy
+import math
 
 class LongSequence:
     # This is a general class that holds a long sequence (or maybe a number of long sequences)
@@ -140,7 +141,7 @@ class KnnRegressor:
                 data['Y'].values
             )
         elif self.k is None:
-            n = int(n*0.9) # adjust sample size for 10 fold cross validation
+            n = int(math.floor(n*0.85)) # adjust sample size for 10 fold cross validation
             ks = [2**ii+1 for ii in range(3, int(np.log2(n)+1))]
             loss = np.zeros(len(ks))
             ii = 0
