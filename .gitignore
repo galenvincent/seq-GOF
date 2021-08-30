@@ -1,7 +1,12 @@
-# ignore data files
+# ignore data and figures 
 data/*
+figures/*
 
 .DS_Store
+
+# R Stuff
+.Rhistory
+
 
 # HPC Files
 *.pbs
