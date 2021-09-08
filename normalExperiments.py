@@ -4,6 +4,7 @@
 # Use the methods defined in sequentialGOF to run some experiments 
 # for validity, power, etc.
 
+from pandas.core.frame import DataFrame
 import sequentialGOF as gof
 from tqdm.auto import tqdm
 import numpy as np
@@ -52,7 +53,7 @@ def perform_test(ii, real_dist, emulated_dist, n1, n0, m1, m0, L, B):
 
     sim.data.evaluation['replication'] = ii + 1
 
-    return [sim.data.evaluation, sim.get_global()]
+    return [sim.data.evaluation, sim.get_global(), sim.cross_entropy(), sim.prior_adjusted_cross_entropy()]
 
 num_cores = multiprocessing.cpu_count()
 iterations = tqdm(range(N), desc = "Replications")
@@ -65,13 +66,19 @@ raw_output = parallel_verbose(delayed(perform_test)(ii, real_normal_dist, emulat
 
 pvals_glob_list = []
 pvals_loc_list = []
+cross_entropy_list = []
+adj_cross_entropy_list = []
 
 for x in raw_output:
     pvals_loc_list.append(x[0])
     pvals_glob_list.append(x[1])
+    cross_entropy_list.append(x[2])
+    adj_cross_entropy_list.append(x[3])
 
-pvals_glob = np.array(pvals_glob_list)
+pvals_glob = pd.DataFrame(list(zip(pvals_glob_list, cross_entropy_list, adj_cross_entropy_list)),
+                          columns = ['pval', 'ce', 'adj_ce'])
 pvals_loc = pd.concat(pvals_loc_list, ignore_index=True)
+
 
 pvals_loc.to_csv(save_folder +
                  'reps_'+str(int(N))+
@@ -88,17 +95,18 @@ pvals_loc.to_csv(save_folder +
                  '-local'+
                  '.csv',
                  index = False)
-np.savetxt(save_folder +
-            'reps_'+str(int(N))+
-            '-B_'+str(int(B))+
-            '-L_'+str(int(L))+
-            '-n1_'+str(int(n1))+
-            '-n0_'+str(int(n0))+
-            '-m1_'+str(int(m1))+
-            '-m0_'+str(int(m0))+
-            '-mu1_'+str(mu1)+
-            '-mu0_'+str(mu0)+
-            '-sigma1_'+str(sigma1)+
-            '-sigma0_'+str(sigma0)+
-           '-global'+
-           '.csv', pvals_glob, delimiter=',')
+
+pvals_glob.to_csv(save_folder +
+                    'reps_'+str(int(N))+
+                    '-B_'+str(int(B))+
+                    '-L_'+str(int(L))+
+                    '-n1_'+str(int(n1))+
+                    '-n0_'+str(int(n0))+
+                    '-m1_'+str(int(m1))+
+                    '-m0_'+str(int(m0))+
+                    '-mu1_'+str(mu1)+
+                    '-mu0_'+str(mu0)+
+                    '-sigma1_'+str(sigma1)+
+                    '-sigma0_'+str(sigma0)+
+                    '-global'+
+                    '.csv', index = False)

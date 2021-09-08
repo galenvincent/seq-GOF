@@ -265,6 +265,28 @@ class Simulation:
         
         return (len(np.where(glob_null > glob_obs)[0]) + 1) / (self.B + 1)
 
+    def cross_entropy(self):
+        if not self.tested:
+            raise Exception("Test statistics not computed. Run test() first.")
+
+        return log_loss(self.data.evaluation['Y'], self.data.evaluation['prob_est'])
+
+    def prior_adjusted_cross_entropy(self):
+        if not self.tested:
+            raise Exception("Test statistics not computed. Run test() first.")
+        
+        pi_hat_1 = self.n1/(self.n1 + self.n0)
+        pi_hat_0 = 1 - pi_hat_1
+
+        pi_hat_eval_1 = self.m1/(self.m1 + self.m0)
+        pi_hat_eval_0 = 1 - pi_hat_eval_1
+
+        adjusted_probs = (pi_hat_eval_1/pi_hat_1)*self.data.evaluation['prob_est']/((pi_hat_eval_1/pi_hat_1)*self.data.evaluation['prob_est'] + (pi_hat_eval_0/pi_hat_0)*(1-self.data.evaluation['prob_est']))
+
+        return log_loss(self.data.evaluation['Y'], adjusted_probs)
+
+
+        
 
 
 
