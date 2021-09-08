@@ -6,6 +6,7 @@ import sklearn.ensemble as ens
 import sklearn.neural_network as nnet
 from sklearn.model_selection import cross_val_score
 from sklearn.metrics import make_scorer
+from sklearn.metrics import log_loss
 from tqdm import tqdm
 import copy
 import math
@@ -215,6 +216,8 @@ class Simulation:
         self.data.evaluation['prob_est'] = self.r0.predict(self.data.evaluation)
 
         self.P = np.zeros((len(self.data.evaluation), B))
+        self.adjusted_cross_entropy = np.zeros(B)
+                          
         if progress_bar:
             for bb in tqdm(range(B), desc = 'Computing null distribution', leave=False):
                 real_Z_b = self.emulated_dist.draw(self.n1)
@@ -243,6 +246,7 @@ class Simulation:
                 r_b.fit(data_b.training)
 
                 self.P[:, bb] = r_b.predict(self.data.evaluation) - self.pi_hat
+                self.adjusted_cross_entropy[bb] = log_loss(self.data.evaluation['Y'], r_b.predict(self.data.evaluation))
         
         pvals = np.zeros(len(self.data.evaluation))
         for ii in range(len(pvals)):
