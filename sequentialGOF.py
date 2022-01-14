@@ -191,11 +191,9 @@ class Simulation:
         self.L = L
 
         # Data generation
-        #self.real_dist = NormalSequence(mu1, sigma1)
         real_Z = self.real_dist.draw(self.N_real)
         real_S_set = real_Z.extract_overlap(L)
 
-        #self.emulated_dist = NormalSequence(mu0, sigma0)
         emulated_Z = self.emulated_dist.draw(self.N_emulated)
         emulated_S_set = emulated_Z.extract_overlap(L)
 
@@ -216,7 +214,6 @@ class Simulation:
         self.data.evaluation['prob_est'] = self.r0.predict(self.data.evaluation)
 
         self.P = np.zeros((len(self.data.evaluation), B))
-        self.adjusted_cross_entropy = np.zeros(B)
                           
         if progress_bar:
             for bb in tqdm(range(B), desc = 'Computing null distribution', leave=False):
@@ -246,7 +243,6 @@ class Simulation:
                 r_b.fit(data_b.training)
 
                 self.P[:, bb] = r_b.predict(self.data.evaluation) - self.pi_hat
-                self.adjusted_cross_entropy[bb] = log_loss(self.data.evaluation['Y'], r_b.predict(self.data.evaluation))
         
         pvals = np.zeros(len(self.data.evaluation))
         for ii in range(len(pvals)):
@@ -265,7 +261,7 @@ class Simulation:
         
         return (len(np.where(glob_null > glob_obs)[0]) + 1) / (self.B + 1)
 
-    def cross_entropy(self):
+    def cross_entropy(self, separate = False):
         if not self.tested:
             raise Exception("Test statistics not computed. Run test() first.")
 
@@ -282,6 +278,7 @@ class Simulation:
         pi_hat_eval_0 = 1 - pi_hat_eval_1
 
         adjusted_probs = (pi_hat_eval_1/pi_hat_1)*self.data.evaluation['prob_est']/((pi_hat_eval_1/pi_hat_1)*self.data.evaluation['prob_est'] + (pi_hat_eval_0/pi_hat_0)*(1-self.data.evaluation['prob_est']))
+        self.data.evaluation['adjusted_prob_est'] = adjusted_probs
 
         return log_loss(self.data.evaluation['Y'], adjusted_probs)
 
