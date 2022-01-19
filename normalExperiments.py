@@ -53,7 +53,10 @@ def perform_test(ii, real_dist, emulated_dist, n1, n0, m1, m0, L, B):
 
     sim.data.evaluation['replication'] = ii + 1
 
-    return [sim.data.evaluation, sim.get_global(), sim.cross_entropy(), sim.prior_adjusted_cross_entropy()]
+    return [sim.data.evaluation, sim.get_global(), 
+            sim.cross_entropy(), sim.prior_adjusted_cross_entropy(),
+            sim.brier_score(), sim.prior_adjusted_brier_score(),
+            sim.mse(), sim.mae()]
 
 num_cores = multiprocessing.cpu_count()
 iterations = tqdm(range(N), desc = "Replications")
@@ -68,16 +71,24 @@ pvals_glob_list = []
 pvals_loc_list = []
 cross_entropy_list = []
 adj_cross_entropy_list = []
+brier_list = []
+adj_brier_list = []
+mse_list = []
+mae_list = []
 
 for x in raw_output:
     pvals_loc_list.append(x[0])
     pvals_glob_list.append(x[1])
     cross_entropy_list.append(x[2])
     adj_cross_entropy_list.append(x[3])
+    brier_list.append(x[4])
+    adj_brier_list.append(x[5])
+    mse_list.append(x[6])
+    mae_list.append(x[7])
 
-pvals_glob = pd.DataFrame(list(zip(pvals_glob_list, cross_entropy_list, adj_cross_entropy_list)),
-                          columns = ['pval', 'ce', 'adj_ce'])
 pvals_loc = pd.concat(pvals_loc_list, ignore_index=True)
+pvals_glob = pd.DataFrame(list(zip(pvals_glob_list, cross_entropy_list, adj_cross_entropy_list, brier_list, adj_brier_list, mse_list, mae_list)),
+                          columns = ['pval', 'ce', 'adj_ce', 'bs', 'adj_bs', 'mse', 'mae'])
 
 
 pvals_loc.to_csv(save_folder +
