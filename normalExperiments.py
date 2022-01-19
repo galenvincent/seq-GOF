@@ -26,6 +26,7 @@ parser.add_argument("--mu1", type=float, action='store', default=0.0)
 parser.add_argument("--mu0", type=float, action='store', default=2.0)
 parser.add_argument("--sigma1", type=float, action='store', default=1.0)
 parser.add_argument("--sigma0", type=float, action='store', default=1.0)
+parser.add_argument("--label", type=str, action='store', default='')
 parser.add_argument("--folder", type=str, action='store', default='')
 parsed = parser.parse_args()
 
@@ -40,6 +41,9 @@ mu1 = parsed.mu1
 mu0 = parsed.mu0
 sigma1 = parsed.sigma1
 sigma0 = parsed.sigma0
+label = parsed.label
+if label != '':
+    label = '-' + label
 save_folder = parsed.folder
 
 
@@ -93,6 +97,7 @@ pvals_loc.to_csv(save_folder +
                  '-sigma1_'+str(sigma1)+
                  '-sigma0_'+str(sigma0)+
                  '-local'+
+                 label +
                  '.csv',
                  index = False)
 
@@ -109,4 +114,5 @@ pvals_glob.to_csv(save_folder +
                     '-sigma1_'+str(sigma1)+
                     '-sigma0_'+str(sigma0)+
                     '-global'+
+                    label +
                     '.csv', index = False)
