@@ -63,8 +63,8 @@ for (ii in seq_along(n0_seq)) {
   print(paste0("n1: ", n1, ", n0: ", as.character(n0_seq[ii])))
   n0 = as.character(n0_seq[ii])
   upload = read_sims(N = N, n0 = n0, n1 = n1, mu0 = mu0,
-                     root = 'data/normal-experiments-with-cross-entropy/',
-                     ce = TRUE)
+                     root = 'data/012022_normal/',
+                     type = 'new')
   
   temp = upload$global
   temp$n0 = n0_seq[ii]
@@ -82,17 +82,46 @@ globs <- reduce(results, bind_rows)
 locs <- reduce(results_local, bind_rows)
 
 
-
 globs %>% 
   group_by(n0) %>%
-  summarize(fp=sum(pval<0.05), n=n(), rate=mean(pval<0.05), mean_ce = mean(ce), mean_adj_ce = mean(adj_ce)) %>%
-  pivot_longer(cols = c('rate', 'mean_ce', 'mean_adj_ce'), names_to = 'metric') %>%
+  summarize(fp=sum(pval<0.05), n=n(), rate=mean(pval<0.05), 
+            mean_ce = mean(ce), sd_ce = sd(ce),
+            mean_adj_ce = mean(adj_ce), sd_adj_ce = sd(adj_ce),
+            mean_bs = mean(bs), sd_bs = sd(bs),
+            mean_adj_bs = mean(adj_bs), sd_adj_bs = sd(adj_bs),
+            mean_mse = mean(mse), sd_mse = sd(mse),
+            mean_mae = mean(mae), sd_mae = sd(mae)) %>%
+  pivot_longer(cols = c('rate', 'mean_ce', 'mean_adj_ce', 'mean_bs', 'mean_adj_bs', 'mean_mse', 'mean_mae'), 
+               names_to = 'metric') %>%
   ggplot(aes(x = n0, y = value, col = metric)) +
   geom_point() + 
   geom_line() +
   labs(y = '') +
-  theme_bw() +
-  scale_color_discrete(name = '', labels = c('Adj. Cross Entropy', 'Cross Entropy', 'Power')) 
+  theme_bw() 
+  #scale_color_discrete(name = '', labels = c('Adj. Cross Entropy', 'Cross Entropy', 'Power')) 
+
+globs %>% 
+  group_by(n0) %>%
+  summarize(fp=sum(pval<0.05), n=n(), rate=mean(pval<0.05), 
+            mean_ce = mean(ce), sd_ce = sd(ce),
+            mean_adj_ce = mean(adj_ce), sd_adj_ce = sd(adj_ce),
+            mean_bs = mean(bs), sd_bs = sd(bs),
+            mean_adj_bs = mean(adj_bs), sd_adj_bs = sd(adj_bs),
+            mean_mse = mean(mse), sd_mse = sd(mse),
+            mean_mae = mean(mae), sd_mae = sd(mae)) %>%
+  pivot_longer(cols = c('mean_adj_bs', 'mean_mse', 'mean_mae'), 
+               names_to = 'metric') %>%
+  mutate(std = case_when(
+    metric == 'mean_adj_bs' ~ sd_adj_bs,
+    metric == 'mean_mse' ~ sd_mse,
+    metric == 'mean_mae' ~ sd_mae
+  )) %>% 
+  ggplot(aes(x = n0, y = value, col = metric)) +
+  geom_point() + 
+  geom_line() +
+  geom_ribbon(aes(ymin=value - std, ymax=value + std), linetype=2, alpha=0.1) +
+  labs(y = '') +
+  theme_bw() 
 
 meds <- globs %>% 
   filter(n0 %in% c(200, 500, 700, 1000)) %>%
@@ -120,26 +149,75 @@ brier_loss <- function(y_real, y_prob) {
   mean((y_real - y_prob)^2)
 }
 
+median_ae <- function(y_prob_real, y_prob) {
+  median(abs(y_prob_real - y_prob))
+}
+
 locs %>%
-  mutate(prob_real = dnorm(x)/(dnorm(x) + dnorm(x, mean = 1)),
-         pi_hat_eval = 0.5,
-         pi_hat_test_1 = n1/(n0 + n1),
-         pi_hat_test_0 = n0/(n0 + n1),
-         prob_est_adj = ((pi_hat_eval/pi_hat_test_1)*prob_est)/((pi_hat_eval/pi_hat_test_1)*prob_est + (pi_hat_eval/pi_hat_test_0)*(1 - prob_est))) %>%
   #filter(prob_est > 0.05, prob_est < 0.95) %>%
   group_by(n0) %>%
-  summarize(ce = ce_loss(Y, prob_est, eps = 1e-15),
-            ce_adj = ce_loss(Y, prob_est_adj, eps = 1e-15),
-            ce_best = ce_loss(Y, prob_real, eps = 1e-15),
-            brier = brier_loss(Y, prob_est),
-            brier_adj = brier_loss(Y, prob_est_adj),
-            brier_best = brier_loss(Y, prob_real)) %>%
-  pivot_longer(cols = c('ce', 'ce_adj')) %>%
-  ggplot(aes(x = n0, y = value, col = name)) + geom_point() + geom_line() + geom_hline(yintercept = 0.581726, col = 'black', linetype = 2)
+  summarize(med_ae = median_ae(adjusted_prob_est, true_prob),
+            med_ae_sd = sd(abs(adjusted_prob_est - true_prob))) %>%
+  ggplot(aes(x = n0, y = med_ae)) + geom_point() + geom_line() +
+  geom_ribbon(aes(ymin=med_ae - med_ae_sd, ymax=med_ae + med_ae_sd), linetype=2, alpha=0.1)
+
+
 
 ### PART OF THE PROBLEM WAS JUST PROB ESTIMATES CLOSE TO ZERO AND ONE!! Brier
 # score kind of fixes this.. but there now isn't a huge asymptote in the loss at all!
 
    
+
+# LPDs
+locs %>%
+  filter(n0 == 1000) %>%
+  ggplot(aes(x = x, y = LPD)) +
+  geom_point() + geom_smooth(method = 'gam')
   
 
+#### MC Example
+n1_seq <- c(35, 75)
+N <- '500'
+n0_seq <- c(25, 37, 50, 75, 100, 150, 200, 250, 300, 400, 500, 600, 700, 800, 900, 1000)
+
+results <- list()
+results_local <- list()
+for (jj in seq_along(n1_seq)) {
+  n1 = as.character(n1_seq[jj])
+  results[[n1]] <- list()
+  results_local[[n1]] <- list()
+  
+  for (ii in seq_along(n0_seq)) {
+    print(paste0("n1: ", as.character(n1_seq[jj]), ", n0: ", as.character(n0_seq[ii])))
+    n0 = as.character(n0_seq[ii])
+    upload = read_sims_mc(N = N, n0 = n0, n1 = n1, 
+                          root = 'data/012022_mc/')
+    
+    temp = upload$global
+    temp$n0 = n0_seq[ii]
+    temp$n1 = as.numeric(n1)
+    temp$i = 1:nrow(upload$global)
+    results[[n1]][[n0]] = temp
+    
+    temp = upload$local
+    temp$n0 = n0_seq[ii]
+    temp$n1 = as.numeric(n1)
+    results_local[[n1]][[n0]] = temp
+  }
+  
+  results[[n1]] = reduce(results[[n1]], bind_rows)
+  results_local[[n1]] = reduce(results_local[[n1]], bind_rows)
+}
+
+globs <- reduce(results, bind_rows)
+locs <- reduce(results_local, bind_rows)
+
+globs %>% 
+  group_by(n0, n1) %>%
+  summarize(fp=sum(pval<0.05), n=n(), rate=mean(pval<0.05)) %>%
+  ggplot(aes(x = n0, y = rate, col = as.factor(n1))) +
+  geom_point() + 
+  geom_line() +
+  labs(y = 'power', col = 'n1') +
+  scale_y_continuous(breaks = seq(0.5, 1.0, by = 0.1)) +
+  theme_bw()
