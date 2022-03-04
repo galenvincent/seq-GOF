@@ -6,8 +6,11 @@ import pomegranate as pom
 import sklearn.neighbors as nn
 import sklearn.ensemble as ens
 import sklearn.neural_network as nnet
+from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import cross_val_score
 from sklearn.metrics import make_scorer, log_loss, mean_squared_error, mean_absolute_error, brier_score_loss
+from statsmodels.tsa.arima_process import ArmaProcess
+from statsmodels.tsa.api import acf
 from tqdm import tqdm
 import copy
 import math
@@ -36,52 +39,128 @@ class LongSequence:
 
         s_set_pd = pd.DataFrame(s_set, columns=cols)
 
-        return s_set_pd
+        return s_set_pd.sort_index(ascending = False, ignore_index=True).iloc[:, ::-1] # Re-order rows and columns back to something that makes more logical sense
 
-class TrainTestData:
-    def __init__(self, real_data, emulated_data, n1, n0, m1 = None, m0 = None):
-        '''
-        This class is for creating and holding testing and training data in the 
-        correct form.
+class CustomArProcess(ArmaProcess):
+    """
+    Custom version of the statsmodels ArmaProcess class with a few additional 
+    functions that will be useful for our application.
+    """
+    def __init__(self, ar = None, scale = 1.0, nobs = 100):
+        self.scale = scale
+        super().__init__(ar=ar, ma=None, nobs=nobs)
+    
+    def generate_sample_custom(self, nsample=100, starters=None, scale=None):
+        """
+        Generate a sample based on some starting values given by 'starters'.
+        Returns a seqeunce where the first elements are given by the values in 
+        'starters'.
+        """
+        assert starters is not None, 'starters must be provided. Use generate_sample if no need for starters.'
+        nstarters = len(starters)
+        nlags = len(self.arcoefs)
+        assert nstarters >= nlags, f'starters is length {nstarters} but must be at at least as long as order of AR process, order = {nlags}.'
 
-        real_data and emulated_data are DataFrames as returned from extract_overlap.
-        n1: training size from real data
-        n0: training size from emulated data
-        m1: evaluation size from real data (not neccesary to fill in if n1 + m1 = total real)
-        m0: evaluation size from emulated data (not neccesary to fill in if n0 + m0 = total emulated)
-        '''
-        if m1 is None:
-            m1 = real_data.shape[0] - n1
-        if m0 is None:
-            m0 = emulated_data.shape[0] - n0
+        scale = scale if scale else self.scale
 
-        # Check that n1, n0, m1, m0 entered make sense
-        assert n1 + m1 <= real_data.shape[0], f"n1 + m1 ({n1 + m1}) is larger than number of rows in real_data ({real_data.shape[0]})."
-        assert n0 + m0 <= emulated_data.shape[0], f"n0 + m0 ({n0 + m0}) is larger than number of rows in emulated_data ({emulated_data.shape[0]})."
+        eps = np.random.normal(loc = 0, scale = scale, size = nsample)
+        y = np.zeros(nsample)
+        y = np.concatenate((starters, y))
+        
+        for ii in range(nstarters, nstarters + nsample):
+            y[ii] = np.dot(y[(ii-nlags):ii], self.arcoefs) + eps[ii - nstarters]
+        
+        return y
+    
+    def draw(self, n):
+        return self.generate_sample(nsample = n, scale = self.scale, burnin = 50)
+    
+    def evaluate_likelihood(self, data, scale=None):
+        """
+        Evaluate the likelihood of some sample for an AR(1) model.
+        See chapter 5.2 of https://www.degruyter.com/document/doi/10.1515/9780691218632/html 
+        data[0] is earier in time, data[n] is later in time
+        """
+        assert len(self.arcoefs) == 1, f'This method is currently only implemented for AR(1) models. This is an AR({len(self.arcoefs)}) model.'
+        n = len(data)
+        phi = self.arcoefs[0]
+        scale = scale if scale else self.scale
 
-        assert real_data.shape[1] == emulated_data.shape[1], "Real and emulated data must have same number of columns."
+        process_sd = scale/np.sqrt(1 - phi**2)
+        f_1 = scipy.stats.norm.pdf(data[0], loc = 0, scale = process_sd)
 
-        self.n1 = n1
-        self.n0 = n0
-        self.m1 = m1
-        self.m0 = m0
+        prod = 1
+        for ii in range(1, n):
+            prod = prod * scipy.stats.norm.pdf(data[ii], loc = phi*data[ii-1], scale = scale)
+        
+        return f_1 * prod
 
-        self.real = real_data
-        self.emulated = emulated_data
+    def true_probabilities(self, data, generative_dist, pi, K):
+        """
+        Calculate true values for m_post = P(Y = 1 | X) based on known true and emulator distributions,
+        and specified marginal pi = P(Y = 1).
 
-        # Append real and emulated data frames with Y = 1 and 0 and organize into 
-        # training and evaluation sets
-        real_data['Y'] = 1
-        emulated_data['Y'] = 0
+        P(Y = 1 | X = x) = P(X = x| Y = 1) * P(Y = 1) / [ P(X = x| Y = 1) * P(Y = 1) + P(X = x| Y = 0) * P(Y = 0) ]
 
-        real_train = real_data.head(n1)
-        real_eval = real_data.tail(m1).reset_index(drop = True)
-        emulated_train = emulated_data.head(n0)
-        emulated_eval = emulated_data.tail(m0).reset_index(drop = True)
+        Arguments:
+            - data (pandas.DataFrame): Result of calling extract_overlap from LongSequence class. 
+                Containing only and all columns for the sequence data (e.g. x, x-1, x-2, ..., x - L + 1).
+            - generative_dist (CustomArProcess): The CustomArProcess object for the generative distribution.
+            - pi (float): On [0, 1]. Value of marginal P(Y = 1) to use for calculation.
+            - K (int): Number of datapoints in the generated sequence B.
+        """
 
-        self.training = pd.concat([real_train, emulated_train], ignore_index=True)
-        self.evaluation = pd.concat([real_eval, emulated_eval], ignore_index=True)
+        def m_post(row):
+            assert 'Y' not in row, 'Response Y should not be a column in data'
+            row_B = row[-K:]
+            p_x_given_1 = self.evaluate_likelihood(row_B)
+            p_x_given_0 = generative_dist.evaluate_likelihood(row_B)
+            return (p_x_given_1 * pi)/(p_x_given_1 * pi + p_x_given_0 * (1 - pi))
+        
+        return np.array(data.apply(m_post, axis = 1))
+    
 
+class DataConstructor:
+    def __init__(self, real_data, generative_mod, ntrain, neval, mtrain, meval, L, J):
+        assert ntrain + neval <= len(real_data), f"ntrain + neval = {ntrain + neval}, len(real_data) = {len(real_data)}."
+
+        train_data = real_data.iloc[:ntrain]
+        test_data = real_data.iloc[ntrain:(ntrain+neval)].reset_index(drop = True)     
+
+        cols = list(real_data.columns)
+        self.seq_cols = cols
+
+        def get_generated(row, m, add_label = True):
+            S = row.to_numpy()
+            A = S[:J]
+            seq_list = [S]
+            for jj in range(m):
+                seq_list.append(generative_mod.generate_sample_custom(nsample = L - J, starters = A))
+            df = pd.DataFrame(seq_list, columns = cols)
+            
+            if add_label:
+                labs = np.zeros(m+1, dtype = int)
+                labs[0] = 1
+                df['Y'] = labs
+            
+            return df
+
+        # Construct training set
+        T_list = []
+        for row in train_data.iterrows():
+            T_list.append(get_generated(row[1], mtrain))
+        T = pd.concat(T_list, ignore_index = True)
+        self.training = T
+
+        # Construct evaluation set
+        if neval > 0:
+            V_list = []
+            for row in test_data.iterrows():
+                V_list.append(get_generated(row[1], meval))
+            V = pd.concat(V_list, ignore_index = True)
+            self.evaluation = V
+        else:
+            self.evaluation = None
         
 class NormalSequence:
     # Class for creating a LongSequence of simple normal randoms.
@@ -254,26 +333,24 @@ class KnnRegressor:
         )[:, 1]
 
 class Simulation:
-    def __init__(self, real_dist, emulated_dist, n1, n0, m1, m0, L = 1):
+    def __init__(self, real_dist, generative_mod, ntrain, neval, mtrain, meval, L, J):
         
         self.real_dist = real_dist
-        self.emulated_dist = emulated_dist
-        self.N_real = n1 + m1 + L - 1
-        self.N_emulated = n0 + m0 + L -1
-        self.n1 = n1
-        self.n0 = n0
-        self.m1 = m1
-        self.m0 = m0
+        self.generative_mod = generative_mod
+        self.ntrain = ntrain
+        self.neval = neval 
+        self.ntot = ntrain + neval + L - 1
+        self.mtrain = mtrain
+        self.meval = meval
         self.L = L
+        self.J = J
+        self.K = L - J
 
         # Data generation
-        real_Z = self.real_dist.draw(self.N_real)
-        real_S_set = real_Z.extract_overlap(L)
+        real_Z = LongSequence(self.real_dist.draw(self.ntot))
+        self.real_S_set = real_Z.extract_overlap(L)
 
-        emulated_Z = self.emulated_dist.draw(self.N_emulated)
-        emulated_S_set = emulated_Z.extract_overlap(L)
-
-        self.data = TrainTestData(real_S_set, emulated_S_set, n1, n0, m1, m0)
+        self.data = DataConstructor(self.real_S_set, self.generative_mod, self.ntrain, self.neval, self.mtrain, self.meval, self.L, self.J)
 
         self.tested = False
         self.B = None
@@ -293,13 +370,7 @@ class Simulation:
                           
         if progress_bar:
             for bb in tqdm(range(B), desc = 'Computing null distribution', leave=False):
-                real_Z_b = self.emulated_dist.draw(self.n1 + self.L - 1)
-                real_S_set_b = real_Z_b.extract_overlap(self.L)
-
-                emulated_Z_b = self.emulated_dist.draw(self.n0 + self.L - 1)
-                emulated_S_set_b = emulated_Z_b.extract_overlap(self.L)
-
-                data_b = TrainTestData(real_S_set_b, emulated_S_set_b, self.n1, self.n0, 0, 0)
+                data_b = DataConstructor(self.real_S_set, self.generative_mod, self.ntrain, 0, self.mtrain, self.meval, self.L, self.J)
 
                 r_b = copy.copy(regression)
                 r_b.fit(data_b.training)
@@ -307,13 +378,7 @@ class Simulation:
                 self.P[:, bb] = r_b.predict(self.data.evaluation) - self.pi_hat
         else:
             for bb in range(B):
-                real_Z_b = self.emulated_dist.draw(self.n1 + self.L - 1)
-                real_S_set_b = real_Z_b.extract_overlap(self.L)
-
-                emulated_Z_b = self.emulated_dist.draw(self.n0 + self.L - 1)
-                emulated_S_set_b = emulated_Z_b.extract_overlap(self.L)
-
-                data_b = TrainTestData(real_S_set_b, emulated_S_set_b, self.n1, self.n0, 0, 0)
+                data_b = DataConstructor(self.real_S_set, self.generative_mod, self.ntrain, 0, self.mtrain, self.meval, self.L, self.J)
 
                 r_b = copy.copy(regression)
                 r_b.fit(data_b.training)
