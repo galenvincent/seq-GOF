@@ -62,7 +62,7 @@ class CustomArProcess(ArmaProcess):
         y = np.concatenate((starters, y))
         
         for ii in range(nstarters, nstarters + nsample):
-            y[ii] = np.dot(y[(ii-nlags):ii], self.arcoefs) + eps[ii - nstarters]
+            y[ii] = np.dot(y[(ii-nlags):ii], np.flip(self.arcoefs)) + eps[ii - nstarters]
         
         return y
     
@@ -72,7 +72,7 @@ class CustomArProcess(ArmaProcess):
         eps = np.random.normal(loc = 0, scale = self.scale, size = n+nburn)
         y = np.zeros(n+nburn)
         for ii in range(nlags, n+nburn):
-            y[ii] = np.dot(y[(ii-nlags):ii], self.arcoefs) + eps[ii]
+            y[ii] = np.dot(y[(ii-nlags):ii], np.flip(self.arcoefs)) + eps[ii]
 
         return y[nburn:]
     
