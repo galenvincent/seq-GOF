@@ -15,41 +15,43 @@ from joblib import Parallel, delayed
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--N", type=int, action='store', default=200)
-parser.add_argument("--L", type=int, action='store', default=1)
-parser.add_argument("--n1", type=int, action='store', default=200)
-parser.add_argument("--n0", type=int, action='store', default=200)
-parser.add_argument("--m1", type=int, action='store', default=50)
-parser.add_argument("--m0", type=int, action='store', default=50)
-parser.add_argument("--B", type=int, action='store', default=200)
+parser.add_argument("--ntrain", type=int, action='store', default=300)
+parser.add_argument("--neval", type=int, action='store', default=300)
+parser.add_argument("--mtrain", type=int, action='store', default=10)
+parser.add_argument("--meval", type=int, action='store', default=1)
+parser.add_argument("--L", type=int, action='store', default=16)
+parser.add_argument("--J", type=int, action='store', default=8)
+parser.add_argument("--Q", type=int, action='store', default=200)
 
-# Add any MC arguments down here. Alpha is a placeolder (not used)
-parser.add_argument("--alpha", type=float, action='store', default=0.125)
+parser.add_argument("--alpha", type=float, action='store', default=0.6) # AR Coefficient
+parser.add_argument("--delta", type=float, action='store', default=-0.6) # Emulator AR Coefficient
 
 parser.add_argument("--folder", type=str, action='store', default='')
 parsed = parser.parse_args()
 
 N = parsed.N
+ntrain = parsed.ntrain
+neval = parsed.neval
+mtrain = parsed.mtrain
+meval = parsed.meval
+Q = parsed.Q
 L = parsed.L
-n1 = parsed.n1
-n0 = parsed.n0
-m1 = parsed.m1
-m0 = parsed.m0
-B = parsed.B
+J = parsed.J
 alpha = parsed.alpha
+delta = parsed.delta
 save_folder = parsed.folder
 
 
-def perform_test(ii, real_dist, emulated_dist, n1, n0, m1, m0, L, B):
+def perform_test(ii, real_dist, emulator_dist, ntrain, neval, mtrain, meval, L, J, Q):
     
-    sim = gof.Simulation(real_dist, emulated_dist, n1, n0, m1, m0, L)
+    sim = gof.Simulation(real_dist, emulator_dist, ntrain, neval, mtrain, meval, L, J)
 
-    covars = [f'x-{j}' for j in range(L)] # Get lagged covariates to use e.g. ['x', 'x-1', 'x-2'] for L = 3
-    covars[0] = 'x'
+    covars = [f'x-{j}' for j in range(L-1, -1, -1)] # Get lagged covariates to use e.g. ['x-2', 'x-1', 'x'] for L = 3
+    covars[L-1] = 'x'
     
-    # TODO: Change regressor?
-    reg = gof.KnnRegressor(variables = covars)
+    reg = gof.ARLogisticRegressor(columns = covars, nlags = 1)
 
-    sim.test(reg, B)
+    sim.test(regression = reg, B = Q)
 
     sim.data.evaluation['replication'] = ii + 1
 
@@ -63,10 +65,10 @@ iterations = tqdm(range(N), desc = "Replications")
 parallel_verbose = Parallel(n_jobs = num_cores, verbose = 5)
 
 # Create MC distributions/estimation
-real_MC = gof.MarkovChain()
-emulated_MC = gof.MarkovChain(order = 1)
+real_dist = gof.CustomArProcess(ar = np.array([1, -alpha]), scale = np.sqrt(1 - alpha**2))
+emulator_dist = gof.CustomArProcess(ar = np.array([1, -delta]), scale = np.sqrt(1 - delta**2))
 
-raw_output = parallel_verbose(delayed(perform_test)(ii, real_MC, emulated_MC, n1, n0, m1, m0, L, B) for ii in iterations)
+raw_output = parallel_verbose(delayed(perform_test)(ii, real_dist, emulator_dist, ntrain, neval, mtrain, meval, L, J, Q) for ii in iterations)
 
 pvals_glob_list = []
 pvals_loc_list = []
@@ -95,21 +97,26 @@ pvals_glob = pd.DataFrame(list(zip(pvals_glob_list, cross_entropy_list, adj_cros
 
 pvals_loc.to_csv(save_folder +
                  'reps_'+str(int(N))+
-                 '-B_'+str(int(B))+
+                 '-Q_'+str(int(Q))+
                  '-L_'+str(int(L))+
-                 '-n1_'+str(int(n1))+
-                 '-n0_'+str(int(n0))+
-                 '-m1_'+str(int(m1))+
-                 '-m0_'+str(int(m0))+
+                 '-alpha_'+str(round(alpha, 1))+
+                 '-delta_'+str(round(delta, 1))+
+                 '-ntrain_'+str(int(ntrain))+
+                 '-mtrain'+str(int(mtrain))+
+                 '-neval_'+str(int(neval))+
+                 '-meval_'+str(int(meval))+
                  '-local'+
                  '.csv', index = False)
+
 pvals_glob.to_csv(save_folder +
-                    'reps_'+str(int(N))+
-                    '-B_'+str(int(B))+
-                    '-L_'+str(int(L))+
-                    '-n1_'+str(int(n1))+
-                    '-n0_'+str(int(n0))+
-                    '-m1_'+str(int(m1))+
-                    '-m0_'+str(int(m0))+
-                    '-global'+
-                    '.csv', index = False)
+                 'reps_'+str(int(N))+
+                 '-Q_'+str(int(Q))+
+                 '-L_'+str(int(L))+
+                 '-alpha_'+str(round(alpha, 1))+
+                 '-delta_'+str(round(delta, 1))+
+                 '-ntrain_'+str(int(ntrain))+
+                 '-mtrain'+str(int(mtrain))+
+                 '-neval_'+str(int(neval))+
+                 '-meval_'+str(int(meval))+
+                 '-global'+
+                 '.csv', index = False)

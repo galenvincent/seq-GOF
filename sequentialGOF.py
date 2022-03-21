@@ -2,18 +2,12 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import scipy.stats 
-import pomegranate as pom
-import sklearn.neighbors as nn
-import sklearn.ensemble as ens
-import sklearn.neural_network as nnet
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import cross_val_score
-from sklearn.metrics import make_scorer, log_loss, mean_squared_error, mean_absolute_error, brier_score_loss
+from sklearn.metrics import log_loss, mean_squared_error, mean_absolute_error, brier_score_loss
 from statsmodels.tsa.arima_process import ArmaProcess
 from statsmodels.tsa.api import acf
 from tqdm import tqdm
 import copy
-import math
 
 class LongSequence:
     # This is a general class that holds a long sequence (or maybe a number of long sequences)
@@ -118,10 +112,69 @@ class CustomArProcess(ArmaProcess):
             return (p_x_given_1 * pi)/(p_x_given_1 * pi + p_x_given_0 * (1 - pi))
         
         return np.array(data.apply(m_post, axis = 1))
+
+class VarProcess:
+    def __init__(self, coefs, sigma):
+        """
+        Parameters:
+            - coefs (np.ndarray): p x k x k array holding coefficients for the VAR model.
+            - sigma (np.ndarray): k x k covariance matrix for gaussian noise on the VAR model.
+        """
+        self.coefs = coefs
+        self.sigma = sigma
+        self.p = coefs.shape[0]
+        self.k = coefs.shape[1]
+        
+        assert coefs.shape[1] == coefs.shape[2], 'coefs has improper dimensions.'
+
+
+    def generate_sample(self, nsample=100, burnin=100, starters=None):
+        """
+        Generate a simulated sample from the VAR model, with or without a starter sequence
+
+        Parameters:
+        - nsample (int):
+        - burnin (int): If starters == None, how many data points at beginning of
+            simulation to throw out?
+        - starters (np.ndarray): If None, generate unconcitionally. Otherwise, 
+            an n x k ndarray of observations to start off the party. Must be the
+            case that n >= p
+        - f (function): Takes starters as an argument, 
+        """
+
+        # Initialize with zeros if no starters provided
+        if starters is None:
+            starters = np.zeros((self.p, self.k))
+            nstarters = self.p
+            nsim = nsample + burnin 
+        else:
+            nstarters = starters.shape[0]
+            assert nstarters >= self.p, 'Must provide at least p observations in starters.'
+            nsim = nsample
+            burnin = 0
+        
+        # Simulate errors
+        W =  np.random.multivariate_normal(np.zeros(self.k), self.sigma, size=nsim)
+        
+        # Simulate process
+        Y = np.zeros((nsim, self.k))
+        Y[:nstarters,:] = starters
+        
+        for t in range(nstarters, nsim):
+            Y[t] = W[t]
+            for i in range(1, self.p+1):
+                Y[t] += self.coefs[i-1] @ Y[t-i]
+        
+        Y = Y[burnin:]
+        
+        return Y
     
 
 class DataConstructor:
-    def __init__(self, real_data, generative_mod, ntrain, neval, mtrain, meval, L, J):
+    def __init__(self, real_data, generative_mod, ntrain, neval, mtrain, meval, L, J, null_hyp = False, f=lambda x: False):
+        """
+             - f (function): Takes in sequence of length J, returns True if th
+        """
         assert ntrain + neval <= len(real_data), f"ntrain + neval = {ntrain + neval}, len(real_data) = {len(real_data)}."
 
         train_data = real_data.iloc[:ntrain]
@@ -133,8 +186,17 @@ class DataConstructor:
         def get_generated(row, m, add_label = True):
             S = row.to_numpy()
             A = S[:J]
-            seq_list = [S]
-            for jj in range(m):
+            
+            # If generating under the null, create list of all generated sequences, 
+            # otherwise, use the real sequence as the first element of the list
+            if null_hyp:
+                seq_list = []
+                m_rep = m + 1
+            else:
+                seq_list = [S]
+                m_rep = m
+
+            for jj in range(m_rep):
                 seq_list.append(generative_mod.generate_sample_custom(nsample = L - J, starters = A))
             df = pd.DataFrame(seq_list, columns = cols)
             
@@ -189,148 +251,48 @@ class NormalSequence:
         
         return np.array(data.apply(m_post, axis = 1))
 
-
-class MarkovChain:
+class ARLogisticRegressor:
     """
-    Class that you can give an order / transition matrix that will initialize 
-    the chain for being drawn from in the future (with a "draw" method or something
-    similar). Draw method should return instance of LongSequence Class.
+    Logistic regression based on empirical autoregression coefficient of input sequence.
 
-    Parameters:
-       - d_0: Dictionary of zeroth order transition probabilities (i.e. marginals)
-       - d_1: Dictionary of first order transition probabilities 
-       - d_2: Dictionary of second order transition probabilities
+    Arguments:
+        - columns (list of str): Column names for the sequence to use, where earlier 
+            items in the list represent earlier in time: columns[0] is earlier in 
+            time than columns[1], etc.
+        - nlags (int): Number of autocorrelation lags to use in the regression.
+            e.g. nlags = 1 will use only the first-order autocorrelation to predict class label.
+        - **kwargs: Argumnets to be passed to sklearn.linear_model.LogisticRegression.
+            Any hyperparameters for the regression.
     """
+    def __init__(self, columns, nlags, **kwargs):
+        self.regression = LogisticRegression(**kwargs)
+        self.nlags = nlags
+        self.columns = columns
     
-    def __init__(self,
-                 d0 = {'0': 0.5, '1': 0.5}, 
-                 d1 = {'0,0': 0.5, '0,1': 0.5,
-                        '1,0': 0.5, '1,1': 0.5}, 
-                 d2 = {'00,0': 0.125, '00,1': 0.875,
-                        '10,0': 0.875, '10,1': 0.125,
-                        '01,0': 0.5, '01,1': 0.5,
-                        '11,0': 0.5, '11,1': 0.5},
-                 order = 2
-                 ):
-
-        d0_pom = pom.DiscreteDistribution(d0)
-
-        d1_pom = pom.ConditionalProbabilityTable([['1', '1', d1['1,1']],
-                                            ['1', '0', d1['1,0']],
-                                            ['0', '1', d1['0,1']],
-                                            ['0', '0', d1['0,0']]], [d0_pom])
-
-        d2_pom = pom.ConditionalProbabilityTable([['1', '1', '1', d2['11,1']],
-                                            ['1', '1', '0', d2['11,0']],
-                                            ['1', '0', '1', d2['10,1']],
-                                            ['1', '0', '0', d2['10,0']],
-                                            ['0', '1', '1', d2['01,1']],
-                                            ['0', '1', '0', d2['01,0']],
-                                            ['0', '0', '1', d2['00,1']],
-                                            ['0', '0', '0', d2['00,0']]], [d0_pom, d1_pom])
-        
-        self.order = order
-
-        if self.order == 1:
-            self.chain = pom.MarkovChain([d0_pom, d1_pom])
-        elif self.order == 2:
-            self.chain = pom.MarkovChain([d0_pom, d1_pom, d2_pom])
-
-    def draw(self, n, burnin = 50):
-        samp = self.chain.sample(n + burnin)[burnin:]
-        return LongSequence(np.array(list(map(int, samp))))
-
-    def true_probabilities(self, data, emulator_dist, pi):
-        """
-        Calculate true values for m_post = P(Y = 1 | X).
-
-        Arguments:
-            - data (pandas.DataFrame): Result of calling extract_overlap from LongSequence class.
-            - emulator_MC (MarkovChain): The MC object for the emulator distribution
-            - pi (float): On [0, 1]. Value of marginal P(Y = 1) to use for calculation.
-        """
-        
-        def m_post(row):
-            row_formatted = [str(y) for y in list(row[::-1])]
-            p_x_given_1 = np.exp(self.chain.log_probability(row_formatted))
-            p_x_given_0 = np.exp(emulator_dist.chain.log_probability(row_formatted))
-            return (p_x_given_1 * pi)/(p_x_given_1 * pi + p_x_given_0 * (1 - pi))
-        
-        return np.array(data.apply(m_post, axis = 1))
-
-    def get_trans_matrix(self):
-        return self.chain.distributions[self.order].to_dict()['table']
-
-class MCTrain(MarkovChain):
-    # Inhererted class from the MarkovChain class. The initializer on this class 
-    # will instead take in a MC order and some data and then fit the transition 
-    # matrix (see Trey's code for how to do this). It will then call the MarkovChain
-    # initializer and create an instance of that class, all other methods stay
-    # the same.
-    def __init__(self, training_data, order = 2):
-        
-        # Train MC
-        self.chain = pom.MarkovChain.from_samples(training_data, k = order)
-
-# Use Knn with this loss
-def prob_class_loss(Y, Y_pred):
-    pos_cases = np.where(Y == 1)
-    return (Y_pred**2).mean() - 2/len(Y)*Y_pred[pos_cases].sum()
-
-class KnnRegressor:
-    '''
-    K-nearest neighbor regression.
-
-    Note: For >1 dimension, all dimensions should be on the same scale.
-    '''
-    def __init__(self, variables=["x"], k=None):
-        self.regression = None
-        self.variables = variables
-        self.k = k
-
     def fit(self, data):
-        n = len(data)
-        if self.k == 'heuristic':
-            self.k = int(np.floor(np.sqrt(n)))
-            self.regression = nn.KNeighborsClassifier(n_neighbors=self.k)
-            self.regression.fit(
-                data[self.variables].values.reshape(-1, len(self.variables)),
-                data['Y'].values
-            )
-        elif self.k is None:
-            n = int(math.floor(n*0.85)) # adjust sample size for 10 fold cross validation
-            ks = [2**ii+1 for ii in range(3, int(np.log2(n)+1))]
-            loss = np.zeros(len(ks))
-            ii = 0
-            for kk in ks:
-                self.regression = nn.KNeighborsClassifier(n_neighbors=kk)
-                loss[ii] = cross_val_score(self.regression,
-                                           data[self.variables].values.reshape(-1, len(self.variables)),
-                                           data['Y'].values,
-                                           cv=10,
-                                           scoring=make_scorer(
-                                               prob_class_loss,
-                                               needs_proba=True
-                                           )
-                                           ).mean()
-                ii += 1
-            self.k = ks[np.where(loss == loss.min())[0][0]]
-            self.regression = nn.KNeighborsClassifier(n_neighbors=self.k)
-            self.regression.fit(
-                data[self.variables].values.reshape(-1, len(self.variables)), 
-                data['Y'].values
-            )
-        else:
-            self.regression = nn.KNeighborsClassifier(k=self.k)
-            self.regression.fit(
-                data[self.variables].values.reshape(-1, len(self.variables)), 
-                data['Y'].values
-            )
+        """
+        Arguments:
+            - data (pd.DataFrame): Training data. Must have response column named 'Y'.
+        """
+        # Estimate autocorrelation
+        data_cut = data[self.columns]
+        acfs = data_cut.apply(lambda x: acf(x, nlags = self.nlags, fft = True)[1:], axis = 1, result_type = 'expand')
+        
+        # Fit regression
+        assert 'Y' in data, 'Response column with name Y not found in provided training data.'
+        self.regression.fit(acfs, data['Y'])
 
     def predict(self, data):
-        return self.regression.predict_proba(
-            data[self.variables].values.reshape(-1, len(self.variables))
-        )[:, 1]
+        """
+        Return predicted probabilities P(Y = 1 | X) for provided data X.
+
+         Arguments:
+            - data (pd.DataFrame): Data to provide probabilistic estimates for.
+        """
+        data_cut = data[self.columns]
+        acfs = data_cut.apply(lambda x: acf(x, nlags = self.nlags, fft = True)[1:], axis = 1, result_type = 'expand')
+        return self.regression.predict_proba(acfs)[:, 1]
+
 
 class Simulation:
     def __init__(self, real_dist, generative_mod, ntrain, neval, mtrain, meval, L, J):
@@ -370,7 +332,7 @@ class Simulation:
                           
         if progress_bar:
             for bb in tqdm(range(B), desc = 'Computing null distribution', leave=False):
-                data_b = DataConstructor(self.real_S_set, self.generative_mod, self.ntrain, 0, self.mtrain, self.meval, self.L, self.J)
+                data_b = DataConstructor(self.real_S_set, self.generative_mod, self.ntrain, 0, self.mtrain, self.meval, self.L, self.J, null_hyp = True)
 
                 r_b = copy.copy(regression)
                 r_b.fit(data_b.training)
@@ -378,7 +340,7 @@ class Simulation:
                 self.P[:, bb] = r_b.predict(self.data.evaluation) - self.pi_hat
         else:
             for bb in range(B):
-                data_b = DataConstructor(self.real_S_set, self.generative_mod, self.ntrain, 0, self.mtrain, self.meval, self.L, self.J)
+                data_b = DataConstructor(self.real_S_set, self.generative_mod, self.ntrain, 0, self.mtrain, self.meval, self.L, self.J, null_hyp = True)
 
                 r_b = copy.copy(regression)
                 r_b.fit(data_b.training)
@@ -415,10 +377,10 @@ class Simulation:
         if not self.tested:
             raise Exception("Orginal probabilities not computed. Run test() first.")
 
-        pi_hat_1 = self.n1/(self.n1 + self.n0)
+        pi_hat_1 = self.pi_hat
         pi_hat_0 = 1 - pi_hat_1
 
-        pi_hat_eval_1 = self.m1/(self.m1 + self.m0)
+        pi_hat_eval_1 = self.data.evaluation['Y'].mean()
         pi_hat_eval_0 = 1 - pi_hat_eval_1
 
         adjusted_probs = (pi_hat_eval_1/pi_hat_1)*self.data.evaluation['prob_est']/((pi_hat_eval_1/pi_hat_1)*self.data.evaluation['prob_est'] + (pi_hat_eval_0/pi_hat_0)*(1-self.data.evaluation['prob_est']))
@@ -434,12 +396,10 @@ class Simulation:
         if not self.tested:
             raise Exception("Orginal probabilities not computed. Run test() first.")
 
-        covars = [f'x-{j}' for j in range(self.L)] # Get lagged covariates to use e.g. ['x', 'x-1', 'x-2'] for L = 3
-        covars[0] = 'x'
-
-        true_probs = self.real_dist.true_probabilities(data = self.data.evaluation[covars], 
-                                                       emulator_dist = self.emulated_dist, 
-                                                       pi = self.m1/(self.m1 + self.m0))
+        true_probs = self.real_dist.true_probabilities(data = self.data.evaluation[self.data.seq_cols], 
+                                                       generative_dist = self.generative_mod, 
+                                                       pi = self.data.evaluation['Y'].mean(),
+                                                       K = self.K)
 
         self.data.evaluation['true_prob'] = true_probs
 
