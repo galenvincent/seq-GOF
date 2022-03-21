@@ -67,7 +67,14 @@ class CustomArProcess(ArmaProcess):
         return y
     
     def draw(self, n):
-        return self.generate_sample(nsample = n, scale = self.scale, burnin = 50)
+        nburn = 100
+        nlags = len(self.arcoefs)
+        eps = np.random.normal(loc = 0, scale = self.scale, size = n+nburn)
+        y = np.zeros(n+nburn)
+        for ii in range(nlags, n+nburn):
+            y[ii] = np.dot(y[(ii-nlags):ii], self.arcoefs) + eps[ii]
+
+        return y[nburn:]
     
     def evaluate_likelihood(self, data, scale=None):
         """
@@ -171,7 +178,7 @@ class VarProcess:
     
 
 class DataConstructor:
-    def __init__(self, real_data, generative_mod, ntrain, neval, mtrain, meval, L, J, null_hyp = False, f=lambda x: False):
+    def __init__(self, real_data, generative_mod, ntrain, neval, mtrain, meval, L, J, null_hyp = False):
         """
              - f (function): Takes in sequence of length J, returns True if th
         """
@@ -269,7 +276,7 @@ class ARLogisticRegressor:
         self.nlags = nlags
         self.columns = columns
     
-    def fit(self, data):
+    def fit(self, data, get_acf = False):
         """
         Arguments:
             - data (pd.DataFrame): Training data. Must have response column named 'Y'.
@@ -281,6 +288,13 @@ class ARLogisticRegressor:
         # Fit regression
         assert 'Y' in data, 'Response column with name Y not found in provided training data.'
         self.regression.fit(acfs, data['Y'])
+        if get_acf:
+            return acfs
+    
+    def get_acf(self, data):
+        data_cut = data[self.columns]
+        acfs = data_cut.apply(lambda x: acf(x, nlags = self.nlags, fft = True)[1:], axis = 1, result_type = 'expand')
+        return acfs
 
     def predict(self, data):
         """
@@ -327,8 +341,10 @@ class Simulation:
         self.p0 = self.r0.predict(self.data.evaluation) - self.pi_hat
         self.data.evaluation['LPD'] = self.p0
         self.data.evaluation['prob_est'] = self.r0.predict(self.data.evaluation)
+        self.data.training['acf'] = self.r0.get_acf(self.data.training)
 
         self.P = np.zeros((len(self.data.evaluation), B))
+        self.ACF = np.zeros((len(self.data.evaluation), B))
                           
         if progress_bar:
             for bb in tqdm(range(B), desc = 'Computing null distribution', leave=False):
@@ -338,6 +354,8 @@ class Simulation:
                 r_b.fit(data_b.training)
 
                 self.P[:, bb] = r_b.predict(self.data.evaluation) - self.pi_hat
+                self.ACF[:, bb] = r_b.get_acf(data_b.training).to_numpy().flatten()
+
         else:
             for bb in range(B):
                 data_b = DataConstructor(self.real_S_set, self.generative_mod, self.ntrain, 0, self.mtrain, self.meval, self.L, self.J, null_hyp = True)

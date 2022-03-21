@@ -2,6 +2,8 @@ library(tidyverse)
 library(ggplot2)
 source('plots-helpers.R')
 
+#### OLD STUFF ####
+
 n1_seq <- c(15, 25, 35, 50)
 mu0 <- '1.0'
 N <- '500'
@@ -221,3 +223,65 @@ globs %>%
   labs(y = 'power', col = 'n1') +
   scale_y_continuous(breaks = seq(0.5, 1.0, by = 0.1)) +
   theme_bw()
+
+#### NEW STUFF 03/21/21 ####
+
+# Validity study
+mtrain_seq <- c(1, 2, 3, 5, 10)
+alpha_seq <- c('0.1', '0.4', '0.7')
+L <- '16'
+N <- '500'
+ntrain <- '300'
+neval <- '300'
+meval <- '1'
+
+results <- list()
+#results_local <- list()
+for (jj in seq_along(alpha_seq)) {
+  alpha = alpha_seq[jj]
+  results[[alpha]] <- list()
+  #results_local[[alpha]] <- list()
+  
+  for (ii in seq_along(mtrain_seq)) {
+    print(paste0("alpha: ",alpha_seq[jj], ", mtrain: ", as.character(mtrain_seq[ii])))
+    mtrain = as.character(mtrain_seq[ii])
+    upload = read_sims(N = N, L = L, ntrain = ntrain, mtrain = mtrain, 
+                       neval = neval, meval = meval, alpha = alpha, delta = alpha,
+                       root = 'data/032122_validity/')
+    
+    temp = upload$global
+    temp$alpha = as.numeric(alpha)
+    temp$mtrain = mtrain_seq[ii]
+    temp$i = 1:nrow(upload$global)
+    results[[alpha]][[mtrain]] = temp
+    
+    #temp = upload$local
+    #temp$alpha = as.numeric(alpha)
+    #temp$mtrain = mtrain_seq[ii]
+    #results_local[[alpha]][[mtrain]] = temp
+  }
+  
+  results[[alpha]] = reduce(results[[alpha]], bind_rows)
+  #results_local[[alpha]] = reduce(results_local[[alpha]], bind_rows)
+}
+
+globs <- reduce(results, bind_rows)
+#locs <- reduce(results_local, bind_rows)
+
+# pval histograms (should be uniform)
+globs %>% 
+  ggplot(aes(x = pval)) + geom_histogram(bins = 20) +
+  facet_wrap(alpha ~ mtrain, nrow = 3)
+
+# One example to show in meeting
+globs %>%
+  filter(alpha == 0.7, mtrain == 3) %>%
+  ggplot(aes(x = pval)) + geom_histogram(bins = 20)
+
+
+# TODO: Look into this... why are so many of the p-values small? Get out the 
+# algorithm and think about where in the process stuff could be going wrong.
+
+# Only thing I can think of: there's something different about your 
+# generate_sample_custom function than the generate_sample function from 
+# the original AR package.

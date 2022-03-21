@@ -1,57 +1,26 @@
 library(tidyverse)
 library(ggplot2)
 library(viridis)
+library(data.table)
 
 # Read files output from experiments
-read_sims <- function (N = '500', B = '200', L = '1', n1 = '15', n0 = '15', 
-                       m1 = '25', m0 = '25', mu1 = '0.0', mu0 = '2.0', 
-                       sigma1 = '1.0', sigma0 = '1.0',
-                       root = 'data/normal-experiments/',
-                       type = 'new') {
+read_sims <- function (N = '500', Q = '200', L = '16', ntrain = '300', mtrain = '1', 
+                       neval = '300', meval = '1', alpha = '0.6', delta = '0.6',
+                       root = 'data/') {
   
-  base = paste0('reps_',N, '-B_',B, '-L_',L, '-n1_',n1, '-n0_',n0, '-m1_',m1, '-m0_',m0, 
-                '-mu1_',mu1, '-mu0_',mu0, '-sigma1_',sigma1, '-sigma0_',sigma0)
+  base = paste0('reps_',N, '-Q_',Q, '-L_',L, '-alpha_',alpha, '-delta_',delta, 
+                '-ntrain_',ntrain, '-mtrain',mtrain, 
+                '-neval_',neval, '-meval_',meval)
   
-  if (type == 'old') {
-    local = paste0(root, base, '-local.csv')
-    global = paste0(root, base, '-global.csv')
-    
-    local.data <- read.csv(local)
-    global.data <- read.csv(global, header=FALSE)
-    
-  } else if (type == 'old_ce') {
-    local = paste0(root, base, '-local', '-adj_ce.csv')
-    global = paste0(root, base, '-global', '-adj_ce.csv')
-    
-    local.data <- read.csv(local)
-    global.data <- read.csv(global)
-  } else if (type == 'new') {
-    local = paste0(root, base, '-local.csv')
-    global = paste0(root, base, '-global.csv')
-    
-    local.data <- read.csv(local)
-    global.data <- read.csv(global)
-  }
-  
-  return(list(local = local.data, global = global.data))
-}
-
-read_sims_mc <- function (N = '500', B = '200', L = '3', n1 = '15', n0 = '15', 
-                          m1 = '50', m0 = '50',
-                          root = 'data/012022_mc/') {
-  
-  base = paste0('reps_',N, '-B_',B, '-L_',L, '-n1_',n1, '-n0_',n0, '-m1_',m1, '-m0_',m0)
-  
-
   local = paste0(root, base, '-local.csv')
   global = paste0(root, base, '-global.csv')
   
-  local.data <- read.csv(local)
-  global.data <- read.csv(global)
+  local.data <- fread(local)
+  global.data <- fread(global)
 
-  
   return(list(local = local.data, global = global.data))
 }
+
 
 # Summarize rejection fraction (global) by n0 group
 rejection_summary <- function(global_df, n0tf = TRUE){
