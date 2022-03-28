@@ -2,6 +2,7 @@ library(tidyverse)
 library(ggplot2)
 source('plots-helpers.R')
 
+#
 #### OLD STUFF ####
 
 n1_seq <- c(15, 25, 35, 50)
@@ -228,7 +229,7 @@ globs %>%
 
 # Validity study
 mtrain_seq <- c(1, 2, 3, 5, 10)
-alpha_seq <- c('0.1', '0.4', '0.7')
+alpha_seq <- c('0.0')
 L <- '16'
 N <- '500'
 ntrain <- '300'
@@ -247,7 +248,7 @@ for (jj in seq_along(alpha_seq)) {
     mtrain = as.character(mtrain_seq[ii])
     upload = read_sims(N = N, L = L, ntrain = ntrain, mtrain = mtrain, 
                        neval = neval, meval = meval, alpha = alpha, delta = alpha,
-                       root = 'data/032122_validity/')
+                       root = 'data/032322_validity/')
     
     temp = upload$global
     temp$alpha = as.numeric(alpha)
@@ -285,3 +286,6 @@ globs %>%
 # Only thing I can think of: there's something different about your 
 # generate_sample_custom function than the generate_sample function from 
 # the original AR package.
+#
+# To address above: Nope... not that. I changed so that they are exactly the same and still
+# get these funky results. Try what they suggested before and run with random model (alpha = delta = 0)?

@@ -16,24 +16,28 @@ class LongSequence:
         self.data = data
         self.N = data.size
 
-    def extract_overlap(self, L):
+    def extract_overlap(self, L, stride):
         # Convert a long sequence into a collection of short sequences of length 
-        # L, where 1 < L < N. Assume that later entries in self.data are more
-        # recent in time (the typical convention). 
+        # L, where 1 < L < N. Assume that time runs from right to left within
+        # self.data, so that self.data[0] is earlier in time than self.data[1], etc.
+        # 
+        # stride gives the stride length to skip between each sequence S_i, S_i+1.
+
         s_set = []
-        data_rev = self.data[::-1]
-        for ii in range(self.N - L + 1):
-            s_set.append(data_rev[ii : ii + L])
+
+        for ii in range(0, self.N - L + 1, stride):
+            s_set.append(self.data[ii : (ii + L)])
+
         s_set = np.array(s_set)
 
-        # name columns appropriately based on lag
+        # Create column names to keep track of lags
         cols = ['x']
         for ii in range(1, s_set.shape[1]):
             cols.append('x-' + str(ii))
+        cols.reverse()
 
-        s_set_pd = pd.DataFrame(s_set, columns=cols)
-
-        return s_set_pd.sort_index(ascending = False, ignore_index=True).iloc[:, ::-1] # Re-order rows and columns back to something that makes more logical sense
+        s_set_pd = pd.DataFrame(s_set, columns = cols)
+        return s_set_pd
 
 class CustomArProcess(ArmaProcess):
     """
@@ -178,16 +182,14 @@ class VarProcess:
     
 
 class DataConstructor:
-    def __init__(self, real_data, generative_mod, ntrain, neval, mtrain, meval, L, J, null_hyp = False):
+    def __init__(self, train_data, eval_data, generative_mod, ntrain, neval, mtrain, meval, L, J, null_hyp = False):
         """
              - f (function): Takes in sequence of length J, returns True if th
         """
-        assert ntrain + neval <= len(real_data), f"ntrain + neval = {ntrain + neval}, len(real_data) = {len(real_data)}."
+        assert ntrain <= len(train_data), f"ntrain = {ntrain}, len(train_data) = {len(train_data)}."
+        assert neval <= len(eval_data), f"neval = {neval}, len(eval_data) = {len(eval_data)}."
 
-        train_data = real_data.iloc[:ntrain]
-        test_data = real_data.iloc[ntrain:(ntrain+neval)].reset_index(drop = True)     
-
-        cols = list(real_data.columns)
+        cols = list(train_data.columns)
         self.seq_cols = cols
 
         def get_generated(row, m, add_label = True):
@@ -224,7 +226,7 @@ class DataConstructor:
         # Construct evaluation set
         if neval > 0:
             V_list = []
-            for row in test_data.iterrows():
+            for row in eval_data.iterrows():
                 V_list.append(get_generated(row[1], meval))
             V = pd.concat(V_list, ignore_index = True)
             self.evaluation = V
@@ -309,24 +311,29 @@ class ARLogisticRegressor:
 
 
 class Simulation:
-    def __init__(self, real_dist, generative_mod, ntrain, neval, mtrain, meval, L, J):
+    def __init__(self, real_dist, generative_mod, ntrain, neval, mtrain, meval, L, J, stride):
         
         self.real_dist = real_dist
         self.generative_mod = generative_mod
         self.ntrain = ntrain
         self.neval = neval 
-        self.ntot = ntrain + neval + L - 1
+        self.ntot_train = (ntrain - 1)*stride + L
+        self.ntot_eval = (neval - 1)*stride + L
         self.mtrain = mtrain
         self.meval = meval
         self.L = L
         self.J = J
         self.K = L - J
+        self.stride = stride
 
         # Data generation
-        real_Z = LongSequence(self.real_dist.draw(self.ntot))
-        self.real_S_set = real_Z.extract_overlap(L)
+        Z_train = LongSequence(self.real_dist.draw(self.ntot_train))
+        Z_eval = LongSequence(self.real_dist.draw(self.ntot_eval))
+        
+        self.S_set_train = Z_train.extract_overlap(L, stride)
+        self.S_set_eval = Z_eval.extract_overlap(L, stride)
 
-        self.data = DataConstructor(self.real_S_set, self.generative_mod, self.ntrain, self.neval, self.mtrain, self.meval, self.L, self.J)
+        self.data = DataConstructor(self.S_set_train, self.S_set_eval, self.generative_mod, self.ntrain, self.neval, self.mtrain, self.meval, self.L, self.J)
 
         self.tested = False
         self.B = None
@@ -344,21 +351,23 @@ class Simulation:
         self.data.training['acf'] = self.r0.get_acf(self.data.training)
 
         self.P = np.zeros((len(self.data.evaluation), B))
-        self.ACF = np.zeros((len(self.data.evaluation), B))
+        self.ACF = np.zeros((len(self.data.training), B))
                           
         if progress_bar:
             for bb in tqdm(range(B), desc = 'Computing null distribution', leave=False):
-                data_b = DataConstructor(self.real_S_set, self.generative_mod, self.ntrain, 0, self.mtrain, self.meval, self.L, self.J, null_hyp = True)
+                data_b = DataConstructor(self.S_set_train, self.S_set_eval, self.generative_mod, self.ntrain, 0, self.mtrain, self.meval, self.L, self.J, null_hyp = True)
 
                 r_b = copy.copy(regression)
                 r_b.fit(data_b.training)
+
+                data_b.training['acf'] = r_b.get_acf(data_b.training)
 
                 self.P[:, bb] = r_b.predict(self.data.evaluation) - self.pi_hat
                 self.ACF[:, bb] = r_b.get_acf(data_b.training).to_numpy().flatten()
 
         else:
             for bb in range(B):
-                data_b = DataConstructor(self.real_S_set, self.generative_mod, self.ntrain, 0, self.mtrain, self.meval, self.L, self.J, null_hyp = True)
+                data_b = DataConstructor(self.S_set_train, self.S_set_eval, self.generative_mod, self.ntrain, 0, self.mtrain, self.meval, self.L, self.J, null_hyp = True)
 
                 r_b = copy.copy(regression)
                 r_b.fit(data_b.training)
