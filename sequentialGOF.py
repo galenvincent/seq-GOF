@@ -3,6 +3,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import scipy.stats 
 from sklearn.linear_model import LogisticRegression
+from sklearn.neighbors import KNeighborsClassifier
 from sklearn.metrics import log_loss, mean_squared_error, mean_absolute_error, brier_score_loss
 from statsmodels.tsa.arima_process import ArmaProcess
 from statsmodels.tsa.api import acf
@@ -289,6 +290,7 @@ class ARLogisticRegressor:
         
         # Fit regression
         assert 'Y' in data, 'Response column with name Y not found in provided training data.'
+        self.pi = data['Y'].mean()
         self.regression.fit(acfs, data['Y'])
         if get_acf:
             return acfs
@@ -298,7 +300,7 @@ class ARLogisticRegressor:
         acfs = data_cut.apply(lambda x: acf(x, nlags = self.nlags, fft = True)[1:], axis = 1, result_type = 'expand')
         return acfs
 
-    def predict(self, data):
+    def predict(self, data, adjust = False):
         """
         Return predicted probabilities P(Y = 1 | X) for provided data X.
 
@@ -307,7 +309,80 @@ class ARLogisticRegressor:
         """
         data_cut = data[self.columns]
         acfs = data_cut.apply(lambda x: acf(x, nlags = self.nlags, fft = True)[1:], axis = 1, result_type = 'expand')
-        return self.regression.predict_proba(acfs)[:, 1]
+        raw_probs = self.regression.predict_proba(acfs)[:, 1]
+
+        if adjust:
+            pi_1 = self.pi
+            pi_0 = 1 - pi_1
+
+            pi_new_1 = data['Y'].mean()
+            pi_new_0 = 1 - pi_new_1
+
+            adjusted_probs = (pi_new_1/pi_1)*raw_probs/((pi_new_1/pi_1)*raw_probs + (pi_new_0/pi_0)*(1-raw_probs))
+            
+            return adjusted_probs
+        
+        else:
+            return raw_probs
+
+class KnnRegressor:
+    '''
+    K-nearest neighbor regression.
+    Note: For >1 dimension, all dimensions should be on the same scale.
+    '''
+    def __init__(self, columns, nlags, k, **kwargs):
+        self.regression = None
+        self.nlags = nlags
+        self.columns = columns
+        self.k = k
+        self.kwargs = kwargs
+
+    def fit(self, data, get_acf = False):
+        n = len(data)
+
+        # Set value of k
+        if self.k == 'heuristic':
+            self.k = int(np.floor(np.sqrt(n)))
+            self.regression = KNeighborsClassifier(n_neighbors=self.k, **self.kwargs)
+
+        else:
+            self.regression = KNeighborsClassifier(n_neighbors=self.k, **self.kwargs)
+
+        # Calculate ACF for regression
+        data_cut = data[self.columns]
+        acfs = data_cut.apply(lambda x: acf(x, nlags = self.nlags, fft = True)[1:], axis = 1, result_type = 'expand')
+
+        # Fit model
+        assert 'Y' in data, 'Response column with name Y not found in provided training data.'
+        self.pi = data['Y'].mean()
+        self.regression.fit(acfs, data['Y'])
+        
+        if get_acf:
+            return acfs
+
+    def get_acf(self, data):
+        data_cut = data[self.columns]
+        acfs = data_cut.apply(lambda x: acf(x, nlags = self.nlags, fft = True)[1:], axis = 1, result_type = 'expand')
+        return acfs
+
+    def predict(self, data, adjust = False):
+        data_cut = data[self.columns]
+        acfs = data_cut.apply(lambda x: acf(x, nlags = self.nlags, fft = True)[1:], axis = 1, result_type = 'expand')
+        raw_probs = self.regression.predict_proba(acfs)[:, 1]
+
+        if adjust:
+            pi_1 = self.pi
+            pi_0 = 1 - pi_1
+
+            pi_new_1 = data['Y'].mean()
+            pi_new_0 = 1 - pi_new_1
+
+            adjusted_probs = (pi_new_1/pi_1)*raw_probs/((pi_new_1/pi_1)*raw_probs + (pi_new_0/pi_0)*(1-raw_probs))
+            
+            return adjusted_probs
+        
+        else:
+            return raw_probs
 
 
 class Simulation:
@@ -345,12 +420,25 @@ class Simulation:
         # Fit regression and get/save local scores
         self.r0.fit(self.data.training)
         self.pi_hat = self.data.training['Y'].mean()
-        self.p0 = self.r0.predict(self.data.evaluation) - self.pi_hat
+        self.pi_hat_eval = self.data.evaluation['Y'].mean()
+        
+        raw_prob_est = self.r0.predict(self.data.evaluation)
+        adj_prob_est = self.r0.predict(self.data.evaluation, adjust = True)
+
+        self.p0 = raw_prob_est - self.pi_hat
+        self.p0_eval = adj_prob_est - self.pi_hat_eval
+
         self.data.evaluation['LPD'] = self.p0
-        self.data.evaluation['prob_est'] = self.r0.predict(self.data.evaluation)
+        self.data.evaluation['LPD_eval'] = self.p0_eval
+        self.data.evaluation['prob_est'] = raw_prob_est
+        self.data.evaluation['adjusted_prob_est'] = adj_prob_est
+
         self.data.training['acf'] = self.r0.get_acf(self.data.training)
+        self.data.evaluation['acf'] = self.r0.get_acf(self.data.evaluation)
 
         self.P = np.zeros((len(self.data.evaluation), B))
+        self.P_eval = np.zeros((len(self.data.evaluation), B))
+
         self.ACF = np.zeros((len(self.data.training), B))
                           
         if progress_bar:
@@ -360,9 +448,9 @@ class Simulation:
                 r_b = copy.copy(regression)
                 r_b.fit(data_b.training)
 
-                data_b.training['acf'] = r_b.get_acf(data_b.training)
-
                 self.P[:, bb] = r_b.predict(self.data.evaluation) - self.pi_hat
+                self.P_eval[:, bb] = r_b.predict(self.data.evaluation, adjust = True) - self.pi_hat_eval
+                
                 self.ACF[:, bb] = r_b.get_acf(data_b.training).to_numpy().flatten()
 
         else:
@@ -373,6 +461,9 @@ class Simulation:
                 r_b.fit(data_b.training)
 
                 self.P[:, bb] = r_b.predict(self.data.evaluation) - self.pi_hat
+                self.P_eval[:, bb] = r_b.predict(self.data.evaluation, adjust = True) - self.pi_hat_eval
+                
+                self.ACF[:, bb] = r_b.get_acf(data_b.training).to_numpy().flatten()
         
         # Calculate local p-values
         #pvals = np.zeros(len(self.data.evaluation))
@@ -383,7 +474,7 @@ class Simulation:
         #self.data.evaluation['imp_score_sign'] = (self.data.evaluation['LPD'] > self.data.evaluation['LPD'].mean()).astype(int)*2 - 1
         self.tested = True
 
-        self.adjust_probs()
+        #self.adjust_probs()
         self.true_probs()
 
     def get_global(self):
@@ -394,25 +485,34 @@ class Simulation:
         glob_null = np.power(self.P, 2).sum(axis = 0)
         
         return (len(np.where(glob_null > glob_obs)[0]) + 1) / (self.B + 1)
-
-    def adjust_probs(self):
-        """
-        Adjust posterior pobability estimates P(Y = 1 | X) to the probabilities
-        as they are calculated using the evaluation set proportions of Y = 1 and Y = 0.
-        """
-
+    
+    def get_global_eval(self):
         if not self.tested:
-            raise Exception("Orginal probabilities not computed. Run test() first.")
+            raise Exception("Test statistics not computed. Run test() first.")
 
-        pi_hat_1 = self.pi_hat
-        pi_hat_0 = 1 - pi_hat_1
-
-        pi_hat_eval_1 = self.data.evaluation['Y'].mean()
-        pi_hat_eval_0 = 1 - pi_hat_eval_1
-
-        adjusted_probs = (pi_hat_eval_1/pi_hat_1)*self.data.evaluation['prob_est']/((pi_hat_eval_1/pi_hat_1)*self.data.evaluation['prob_est'] + (pi_hat_eval_0/pi_hat_0)*(1-self.data.evaluation['prob_est']))
+        glob_obs = np.power(self.p0_eval, 2).sum()
+        glob_null = np.power(self.P_eval, 2).sum(axis = 0)
         
-        self.data.evaluation['adjusted_prob_est'] = adjusted_probs
+        return (len(np.where(glob_null > glob_obs)[0]) + 1) / (self.B + 1)
+
+    # def adjust_probs(self):
+    #     """
+    #     Adjust posterior pobability estimates P(Y = 1 | X) to the probabilities
+    #     as they are calculated using the evaluation set proportions of Y = 1 and Y = 0.
+    #     """
+
+    #     if not self.tested:
+    #         raise Exception("Orginal probabilities not computed. Run test() first.")
+
+    #     pi_hat_1 = self.pi_hat
+    #     pi_hat_0 = 1 - pi_hat_1
+
+    #     pi_hat_eval_1 = self.data.evaluation['Y'].mean()
+    #     pi_hat_eval_0 = 1 - pi_hat_eval_1
+
+    #     adjusted_probs = (pi_hat_eval_1/pi_hat_1)*self.data.evaluation['prob_est']/((pi_hat_eval_1/pi_hat_1)*self.data.evaluation['prob_est'] + (pi_hat_eval_0/pi_hat_0)*(1-self.data.evaluation['prob_est']))
+        
+    #     self.data.evaluation['adjusted_prob_est'] = adjusted_probs
 
     def true_probs(self):
         """
@@ -425,7 +525,7 @@ class Simulation:
 
         true_probs = self.real_dist.true_probabilities(data = self.data.evaluation[self.data.seq_cols], 
                                                        generative_dist = self.generative_mod, 
-                                                       pi = self.data.evaluation['Y'].mean(),
+                                                       pi = self.pi_hat_eval,
                                                        K = self.K)
 
         self.data.evaluation['true_prob'] = true_probs

@@ -23,6 +23,7 @@ parser.add_argument("--L", type=int, action='store', default=16)
 parser.add_argument("--J", type=int, action='store', default=8)
 parser.add_argument("--Q", type=int, action='store', default=200)
 parser.add_argument("--stride", type=int, action='store', default=1)
+parser.add_argument("--ncovars", type=int, action='store', default=16)
 
 parser.add_argument("--alpha", type=float, action='store', default=0.6) # AR Coefficient
 parser.add_argument("--delta", type=float, action='store', default=-0.6) # Emulator AR Coefficient
@@ -41,17 +42,19 @@ J = parsed.J
 alpha = parsed.alpha
 delta = parsed.delta
 stride = parsed.stride
+ncovars = parsed.ncovars
 save_folder = parsed.folder
 
 
-def perform_test(ii, real_dist, emulator_dist, ntrain, neval, mtrain, meval, L, J, Q, stride):
+def perform_test(ii, real_dist, emulator_dist, ntrain, neval, mtrain, meval, L, J, Q, stride, ncovars):
     
     sim = gof.Simulation(real_dist, emulator_dist, ntrain, neval, mtrain, meval, L, J, stride)
 
-    covars = [f'x-{j}' for j in range(L-J, -1, -1)] # Get coefficients corresponding to "future sequence" B
-    covars[L-J] = 'x'
+    covars = [f'x-{j}' for j in range(ncovars-1, -1, -1)] # Get coefficients corresponding to "future sequence" B
+    covars[ncovars-1] = 'x'
     
-    reg = gof.ARLogisticRegressor(columns = covars, nlags = 1)
+    #reg = gof.ARLogisticRegressor(columns = covars, nlags = 1)
+    reg = gof.KnnRegressor(columns = covars, nlags = 1, k = 'heuristic')
 
     sim.test(regression = reg, B = Q)
 
@@ -60,7 +63,7 @@ def perform_test(ii, real_dist, emulator_dist, ntrain, neval, mtrain, meval, L, 
     return [sim.data.evaluation, sim.get_global(), 
             sim.cross_entropy(), sim.prior_adjusted_cross_entropy(),
             sim.brier_score(), sim.prior_adjusted_brier_score(),
-            sim.mse(), sim.mae()]
+            sim.mse(), sim.mae(), sim.get_global_eval()]
 
 num_cores = multiprocessing.cpu_count()
 iterations = tqdm(range(N), desc = "Replications")
@@ -70,9 +73,10 @@ parallel_verbose = Parallel(n_jobs = num_cores, verbose = 5)
 real_dist = gof.CustomArProcess(ar = np.array([1, -alpha]), scale = np.sqrt(1 - alpha**2))
 emulator_dist = gof.CustomArProcess(ar = np.array([1, -delta]), scale = np.sqrt(1 - delta**2))
 
-raw_output = parallel_verbose(delayed(perform_test)(ii, real_dist, emulator_dist, ntrain, neval, mtrain, meval, L, J, Q, stride) for ii in iterations)
+raw_output = parallel_verbose(delayed(perform_test)(ii, real_dist, emulator_dist, ntrain, neval, mtrain, meval, L, J, Q, stride, ncovars) for ii in iterations)
 
 pvals_glob_list = []
+pvals_eval_glob_list = []
 pvals_loc_list = []
 cross_entropy_list = []
 adj_cross_entropy_list = []
@@ -90,10 +94,11 @@ for x in raw_output:
     adj_brier_list.append(x[5])
     mse_list.append(x[6])
     mae_list.append(x[7])
+    pvals_eval_glob_list.append(x[8])
 
 pvals_loc = pd.concat(pvals_loc_list, ignore_index=True)
-pvals_glob = pd.DataFrame(list(zip(pvals_glob_list, cross_entropy_list, adj_cross_entropy_list, brier_list, adj_brier_list, mse_list, mae_list)),
-                          columns = ['pval', 'ce', 'adj_ce', 'bs', 'adj_bs', 'mse', 'mae'])
+pvals_glob = pd.DataFrame(list(zip(pvals_glob_list, pvals_eval_glob_list, cross_entropy_list, adj_cross_entropy_list, brier_list, adj_brier_list, mse_list, mae_list)),
+                          columns = ['pval', 'pval_eval', 'ce', 'adj_ce', 'bs', 'adj_bs', 'mse', 'mae'])
 
 
 
@@ -102,6 +107,7 @@ pvals_loc.to_csv(save_folder +
                  '-Q_'+str(int(Q))+
                  '-L_'+str(int(L))+
                  '-stride_'+str(int(stride))+
+                 '-ncovar_'+str(int(ncovars))+
                  '-alpha_'+str(round(alpha, 1))+
                  '-delta_'+str(round(delta, 1))+
                  '-ntrain_'+str(int(ntrain))+
@@ -116,6 +122,7 @@ pvals_glob.to_csv(save_folder +
                  '-Q_'+str(int(Q))+
                  '-L_'+str(int(L))+
                  '-stride_'+str(int(stride))+
+                 '-ncovar_'+str(int(ncovars))+
                  '-alpha_'+str(round(alpha, 1))+
                  '-delta_'+str(round(delta, 1))+
                  '-ntrain_'+str(int(ntrain))+

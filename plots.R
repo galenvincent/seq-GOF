@@ -289,3 +289,103 @@ globs %>%
 #
 # To address above: Nope... not that. I changed so that they are exactly the same and still
 # get these funky results. Try what they suggested before and run with random model (alpha = delta = 0)?
+
+#### Plots with Stride ####
+
+# Zero correlation and no B overlap:
+mtrain_seq <- c(1, 3, 10)
+alpha = '0.0'
+stride = '8'
+L <- '16'
+N <- '500'
+ntrain <- '300'
+neval <- '300'
+meval <- '1'
+
+results <- list()
+for (ii in seq_along(mtrain_seq)) {
+  print(paste0("alpha: ",alpha, ", mtrain: ", as.character(mtrain_seq[ii])))
+  mtrain = as.character(mtrain_seq[ii])
+  upload = read_sims_stride(N = N, L = L, ntrain = ntrain, mtrain = mtrain, 
+                             neval = neval, meval = meval, alpha = alpha, delta = alpha,
+                             stride = stride,
+                             root = 'data/032822_validity/')
+  
+  temp = upload$global
+  temp$alpha = as.numeric(alpha)
+  temp$mtrain = mtrain_seq[ii]
+  temp$i = 1:nrow(upload$global)
+  results[[mtrain]] = temp
+  
+  #temp = upload$local
+  #temp$alpha = as.numeric(alpha)
+  #temp$mtrain = mtrain_seq[ii]
+  #results_local[[alpha]][[mtrain]] = temp
+}
+
+globs <- reduce(results, bind_rows)
+#locs <- reduce(results_local, bind_rows)
+
+# pval histograms (should be uniform)
+globs %>% 
+  ggplot(aes(x = pval)) + geom_histogram(bins = 15, color = 'black', fill = '#F8766D') +
+  facet_wrap(mtrain, nrow = 3) +
+  theme_bw()
+
+
+
+# Strong correlation (alpha = 0.8) and varying overlap
+rm(list = ls())
+mtrain_seq <- c(1, 3, 10)
+stride_seq <- c('8', '9', '20')
+alpha <- '0.8'
+L <- '16'
+N <- '500'
+ntrain <- '300'
+neval <- '300'
+meval <- '1'
+
+results <- list()
+#results_local <- list()
+for (jj in seq_along(stride_seq)) {
+  stride = stride_seq[jj]
+  results[[stride]] <- list()
+  #results_local[[alpha]] <- list()
+  
+  for (ii in seq_along(mtrain_seq)) {
+    print(paste0("stride: ",stride_seq[jj], ", mtrain: ", as.character(mtrain_seq[ii])))
+    mtrain = as.character(mtrain_seq[ii])
+    upload = read_sims_stride(N = N, L = L, ntrain = ntrain, mtrain = mtrain, 
+                             neval = neval, meval = meval, alpha = alpha, delta = alpha,
+                             stride = stride,
+                             root = 'data/032822_validity/')
+    
+    temp = upload$global
+    temp$stride = as.numeric(stride)
+    temp$mtrain = mtrain_seq[ii]
+    temp$i = 1:nrow(upload$global)
+    results[[stride]][[mtrain]] = temp
+    
+    #temp = upload$local
+    #temp$alpha = as.numeric(alpha)
+    #temp$mtrain = mtrain_seq[ii]
+    #results_local[[alpha]][[mtrain]] = temp
+  }
+  
+  results[[stride]] = reduce(results[[stride]], bind_rows)
+  #results_local[[alpha]] = reduce(results_local[[alpha]], bind_rows)
+}
+
+globs <- reduce(results, bind_rows)
+#locs <- reduce(results_local, bind_rows)
+
+# pval histograms (should be uniform)
+globs %>% 
+  ggplot(aes(x = pval)) + geom_histogram(bins = 15, color = 'black', fill = '#F8766D') +
+  facet_wrap(stride ~ mtrain, nrow = 3) +
+  theme_bw()
+
+# One example to show in meeting
+globs %>%
+  filter(alpha == 0.7, mtrain == 3) %>%
+  ggplot(aes(x = pval)) + geom_histogram(bins = 20)
